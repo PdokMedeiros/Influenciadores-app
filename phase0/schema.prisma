@@ -1,0 +1,600 @@
+// Influenciadores CRM — Prisma ORM Schema
+// Gerado para Phase 0 (Development Setup)
+// 25 tabelas, multi-tenant (organization_id em tudo), audit logging completo, LGPD-ready
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ============================================================================
+// CORE: Organização e Usuários Internos
+// ============================================================================
+
+model Organization {
+  id                String   @id @default(cuid())
+  name              String
+  slug              String   @unique
+  logo_url          String?
+  max_users         Int      @default(5)
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  is_deleted        Boolean  @default(false)
+  deleted_at        DateTime?
+
+  // Relacionamentos
+  users             User[]
+  permission_grants PermissionGrant[]
+  influencers       Influencer[]
+  campaigns         Campaign[]
+  social_accounts   SocialAccount[]
+  audit_logs        AuditLog[]
+  consent_records   ConsentRecord[]
+  registration_links RegistrationLink[]
+  saved_filters     SavedFilter[]
+  file_assets       FileAsset[]
+
+  @@index([slug])
+  @@index([is_deleted])
+  @@map("organizations")
+}
+
+model User {
+  id                  String   @id @default(cuid())
+  organization_id     String
+  organization        Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  email               String
+  name                String
+  password_hash       String   // bcrypt
+  avatar_url          String?
+  role                UserRole @default(MANAGER)
+  status              UserStatus @default(ACTIVE)
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+  is_deleted          Boolean  @default(false)
+  deleted_at          DateTime?
+
+  // Relacionamentos
+  permission_grants   PermissionGrant[]
+  audit_logs          AuditLog[]
+
+  @@unique([organization_id, email])
+  @@index([organization_id])
+  @@index([status])
+  @@map("users")
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  ANALYST
+  VIEWER
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  INACTIVE
+}
+
+// ============================================================================
+// PERMISSIONS & RBAC
+// ============================================================================
+
+model PermissionGrant {
+  id                  String   @id @default(cuid())
+  organization_id     String
+  organization        Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  user_id             String
+  user                User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  resource_type       PermissionResource
+  resource_id         String?  // null = all; specific ID = one resource
+  action              PermissionAction
+  granted_at          DateTime @default(now())
+  granted_by_id       String?
+  is_deleted          Boolean  @default(false)
+  deleted_at          DateTime?
+
+  @@unique([user_id, resource_type, resource_id, action])
+  @@index([organization_id])
+  @@index([user_id])
+  @@index([resource_type])
+  @@map("permission_grants")
+}
+
+enum PermissionResource {
+  INFLUENCER
+  CAMPAIGN
+  PUBLICATION
+  REPORT
+  SETTINGS
+  AUDIT_LOG
+}
+
+enum PermissionAction {
+  VIEW
+  CREATE
+  EDIT
+  DELETE
+  EXPORT
+}
+
+// ============================================================================
+// INFLUENCERS & SOCIAL ACCOUNTS
+// ============================================================================
+
+model Influencer {
+  id                    String   @id @default(cuid())
+  organization_id       String
+  organization          Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  name                  String
+  bio                   String?
+  profile_image_url     String?
+  website               String?
+  email                 String?
+  phone                 String?
+  location              String?
+  status                InfluencerStatus @default(PROSPECT)
+  category              String?  // "Lifestyle", "Tech", "Moda", etc.
+  professional_profile  ProfessionalProfile?
+  commercial_profile    CommercialProfile?
+  address               Address?
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+  is_deleted            Boolean  @default(false)
+  deleted_at            DateTime?
+
+  // Relacionamentos
+  social_accounts       SocialAccount[]
+  campaign_influencers  CampaignInfluencer[]
+  publications          Publication[]
+  audience_data         AudienceData[]
+  consent_records       ConsentRecord[]
+
+  @@index([organization_id])
+  @@index([status])
+  @@index([category])
+  @@index([is_deleted])
+  @@map("influencers")
+}
+
+enum InfluencerStatus {
+  PROSPECT
+  QUALIFIED
+  ACTIVE
+  INACTIVE
+  BLOCKED
+}
+
+model SocialAccount {
+  id                  String   @id @default(cuid())
+  organization_id     String
+  organization        Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  influencer_id       String
+  influencer          Influencer @relation(fields: [influencer_id], references: [id], onDelete: Cascade)
+  platform            SocialPlatform
+  handle              String
+  platform_id         String  // Instagram user_id, TikTok open_id, etc.
+  profile_url         String
+  followers_count     Int      @default(0)
+  following_count     Int      @default(0)
+  bio                 String?
+  profile_image_url   String?
+  is_verified         Boolean  @default(false)
+  connected_at        DateTime @default(now())
+  last_synced_at      DateTime?
+  is_deleted          Boolean  @default(false)
+  deleted_at          DateTime?
+
+  // OAuth token storage (encrypted in application layer before insert)
+  oauth_connection    OAuthConnection?
+  metric_snapshots    SocialMetricSnapshot[]
+
+  @@unique([organization_id, platform, platform_id])
+  @@index([organization_id])
+  @@index([influencer_id])
+  @@index([platform])
+  @@map("social_accounts")
+}
+
+enum SocialPlatform {
+  INSTAGRAM
+  TIKTOK
+  YOUTUBE
+  FACEBOOK
+}
+
+model OAuthConnection {
+  id                  String   @id @default(cuid())
+  social_account_id   String   @unique
+  social_account      SocialAccount @relation(fields: [social_account_id], references: [id], onDelete: Cascade)
+  access_token        String   // Encrypted: AES-256-GCM with OAUTH_TOKEN_ENCRYPTION_KEY
+  refresh_token       String?  // Encrypted
+  token_expires_at    DateTime?
+  scopes              String   // JSON array: ["user_profile", "user_insights", ...]
+  connected_at        DateTime @default(now())
+  last_refreshed_at   DateTime?
+
+  @@map("oauth_connections")
+}
+
+// ============================================================================
+// SOCIAL METRICS & AUDIENCE
+// ============================================================================
+
+model SocialMetricSnapshot {
+  id                  String   @id @default(cuid())
+  social_account_id   String
+  social_account      SocialAccount @relation(fields: [social_account_id], references: [id], onDelete: Cascade)
+  followers_count     Int
+  following_count     Int
+  posts_count         Int
+  engagement_rate     Float?
+  avg_likes           Float?
+  avg_comments        Float?
+  video_views_30d     Int?     // TikTok specific
+  engagement_rate_30d Float?   // YouTube specific
+  snapshot_date       DateTime @default(now())
+  source_type         MetricSource
+  data_completeness   Float    @default(1.0) // 0.0–1.0: 1.0 = complete, < 1.0 = partial
+
+  // Relacionamentos
+  audience_data       AudienceData[]
+
+  @@index([social_account_id])
+  @@index([snapshot_date])
+  @@index([source_type])
+  @@map("social_metric_snapshots")
+}
+
+enum MetricSource {
+  PUBLIC_API       // YouTube Data API v3
+  OAUTH            // Instagram, TikTok, Facebook OAuth (when influencer connects)
+  MANUAL           // Usuário digitou manualmente
+  IMPORT           // CSV/Excel importado
+  CALCULATED       // Derivado de outros dados (ex: engagement_rate = likes/followers)
+}
+
+model AudienceData {
+  id                  String   @id @default(cuid())
+  metric_snapshot_id  String
+  metric_snapshot     SocialMetricSnapshot @relation(fields: [metric_snapshot_id], references: [id], onDelete: Cascade)
+  influencer_id       String
+  influencer          Influencer @relation(fields: [influencer_id], references: [id], onDelete: Cascade)
+  dimension           AudienceDimension
+  value               String   // "18-24", "São Paulo", "Technology", "Female", etc.
+  percentage          Float
+  count               Int?
+  snapshot_date       DateTime @default(now())
+
+  @@unique([metric_snapshot_id, dimension, value])
+  @@index([influencer_id])
+  @@map("audience_data")
+}
+
+enum AudienceDimension {
+  AGE_RANGE
+  LOCATION
+  GENDER
+  INTEREST
+  LANGUAGE
+}
+
+// ============================================================================
+// INFLUENCER PROFILES
+// ============================================================================
+
+model ProfessionalProfile {
+  id                  String   @id @default(cuid())
+  influencer_id       String   @unique
+  influencer          Influencer @relation(fields: [influencer_id], references: [id], onDelete: Cascade)
+  years_active        Int?
+  main_categories     String[] // JSON: ["Lifestyle", "Fashion"]
+  audience_description String?
+  partnership_history String?
+  portfolio_url       String?
+  rate_currency       String   @default("BRL")
+  rate_per_post       Float?
+  rate_per_video      Float?
+  rate_per_story      Float?
+  rate_per_reel       Float?
+  negotiable          Boolean  @default(true)
+  updated_at          DateTime @updatedAt
+
+  @@map("professional_profiles")
+}
+
+model CommercialProfile {
+  id                  String   @id @default(cuid())
+  influencer_id       String   @unique
+  influencer          Influencer @relation(fields: [influencer_id], references: [id], onDelete: Cascade)
+  preferred_products  String[]
+  excluded_categories String[]
+  response_time_hours Int?
+  contract_terms      String?  // JSON: {"payment_deadline": 30, "content_approval": true}
+  tax_id              String?  // CPF/CNPJ
+  bank_account        String?  // Encrypted
+  updated_at          DateTime @updatedAt
+
+  @@map("commercial_profiles")
+}
+
+model Address {
+  id                  String   @id @default(cuid())
+  influencer_id       String   @unique
+  influencer          Influencer @relation(fields: [influencer_id], references: [id], onDelete: Cascade)
+  street              String?
+  city                String?
+  state               String?
+  postal_code         String?
+  country             String   @default("BR")
+  updated_at          DateTime @updatedAt
+
+  @@map("addresses")
+}
+
+// ============================================================================
+// CAMPAIGNS
+// ============================================================================
+
+model Campaign {
+  id                  String   @id @default(cuid())
+  organization_id     String
+  organization        Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  name                String
+  description         String?
+  status              CampaignStatus @default(DRAFT)
+  brand               String?
+  budget              Float?
+  budget_currency     String   @default("BRL")
+  start_date          DateTime?
+  end_date            DateTime?
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+  is_deleted          Boolean  @default(false)
+  deleted_at          DateTime?
+
+  // Relacionamentos
+  influencers         CampaignInfluencer[]
+  publications        Publication[]
+
+  @@index([organization_id])
+  @@index([status])
+  @@index([is_deleted])
+  @@map("campaigns")
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+model CampaignInfluencer {
+  id                  String   @id @default(cuid())
+  campaign_id         String
+  campaign            Campaign @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
+  influencer_id       String
+  influencer          Influencer @relation(fields: [influencer_id], references: [id], onDelete: Cascade)
+  status              CampaignInfluencerStatus @default(INVITED)
+  agreed_rate         Float?
+  agreed_currency     String   @default("BRL")
+  deliverables        String?  // JSON: [{"type": "post", "count": 3, "deadline": "2026-09-15"}]
+  invited_at          DateTime @default(now())
+  accepted_at         DateTime?
+  completed_at        DateTime?
+  notes                String?
+
+  @@unique([campaign_id, influencer_id])
+  @@index([campaign_id])
+  @@index([influencer_id])
+  @@index([status])
+  @@map("campaign_influencers")
+}
+
+enum CampaignInfluencerStatus {
+  INVITED
+  ACCEPTED
+  DECLINED
+  COMPLETED
+  CANCELLED
+}
+
+// ============================================================================
+// PUBLICATIONS & METRICS
+// ============================================================================
+
+model Publication {
+  id                  String   @id @default(cuid())
+  campaign_id         String?
+  campaign            Campaign? @relation(fields: [campaign_id], references: [id], onDelete: SetNull)
+  influencer_id       String
+  influencer          Influencer @relation(fields: [influencer_id], references: [id], onDelete: Cascade)
+  platform            SocialPlatform
+  content_type        PublicationContentType
+  post_url            String?
+  caption             String?
+  media_urls          String[]
+  posted_at           DateTime
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+  is_deleted          Boolean  @default(false)
+  deleted_at          DateTime?
+
+  // Relacionamentos
+  metric_snapshots    PublicationMetricSnapshot[]
+
+  @@index([influencer_id])
+  @@index([campaign_id])
+  @@index([platform])
+  @@index([posted_at])
+  @@index([is_deleted])
+  @@map("publications")
+}
+
+enum PublicationContentType {
+  POST
+  STORY
+  REEL
+  TIKTOK_VIDEO
+  YOUTUBE_VIDEO
+  CAROUSEL
+  LIVE
+}
+
+model PublicationMetricSnapshot {
+  id                  String   @id @default(cuid())
+  publication_id      String
+  publication         Publication @relation(fields: [publication_id], references: [id], onDelete: Cascade)
+  likes_count         Int      @default(0)
+  comments_count      Int      @default(0)
+  shares_count        Int      @default(0)
+  views_count         Int      @default(0)
+  engagement_rate     Float?
+  reach                Int?
+  impressions         Int?
+  saves_count         Int?
+  snapshot_date       DateTime @default(now())
+  source_type         MetricSource
+
+  @@index([publication_id])
+  @@index([snapshot_date])
+  @@index([source_type])
+  @@map("publication_metric_snapshots")
+}
+
+// ============================================================================
+// FILE STORAGE (References; actual files in S3/R2)
+// ============================================================================
+
+model FileAsset {
+  id                  String   @id @default(cuid())
+  organization_id     String
+  organization        Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  asset_type          AssetType
+  reference_id        String?  // Influencer ID, Campaign ID, etc.
+  file_name           String
+  file_size_bytes     Int
+  mime_type           String
+  s3_key              String   // Caminho no S3/R2: org/{org_id}/influencers/{influencer_id}/media-kit.pdf
+  s3_url              String?
+  uploaded_at         DateTime @default(now())
+  uploaded_by_id      String?
+  is_deleted          Boolean  @default(false)
+  deleted_at          DateTime?
+
+  @@index([organization_id])
+  @@index([asset_type])
+  @@index([reference_id])
+  @@map("file_assets")
+}
+
+enum AssetType {
+  MEDIA_KIT
+  PROOF_OF_PUBLICATION
+  DOCUMENT
+  INVOICE
+  CONTRACT
+  OTHER
+}
+
+// ============================================================================
+// REGISTRATION & ONBOARDING
+// ============================================================================
+
+model RegistrationLink {
+  id                  String   @id @default(cuid())
+  organization_id     String
+  organization        Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  token               String   @unique @default(cuid())
+  inviter_id          String?
+  influencer_email    String?
+  expires_at          DateTime
+  used_at             DateTime?
+  used_by_id          String?
+  is_deleted          Boolean  @default(false)
+  deleted_at          DateTime?
+
+  @@index([organization_id])
+  @@index([token])
+  @@index([expires_at])
+  @@map("registration_links")
+}
+
+// ============================================================================
+// SAVED FILTERS (Para Power Users)
+// ============================================================================
+
+model SavedFilter {
+  id                  String   @id @default(cuid())
+  organization_id     String
+  organization        Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  name                String
+  filter_config       String   // JSON: {"status": ["ACTIVE"], "follower_min": 10000, "platform": ["INSTAGRAM"]}
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+  is_deleted          Boolean  @default(false)
+  deleted_at          DateTime?
+
+  @@index([organization_id])
+  @@map("saved_filters")
+}
+
+// ============================================================================
+// AUDIT & COMPLIANCE
+// ============================================================================
+
+model AuditLog {
+  id                  String   @id @default(cuid())
+  organization_id     String
+  organization        Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  user_id             String?
+  user                User? @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  entity_type         String   // "Influencer", "Campaign", "Publication"
+  entity_id           String
+  action              String   // "created", "updated", "deleted", "exported"
+  changes             String?  // JSON diff: {"name": {"old": "João", "new": "João Silva"}}
+  ip_address          String?
+  user_agent          String?
+  logged_at           DateTime @default(now())
+
+  @@index([organization_id])
+  @@index([user_id])
+  @@index([entity_type])
+  @@index([entity_id])
+  @@index([logged_at])
+  @@map("audit_logs")
+}
+
+model ConsentRecord {
+  id                  String   @id @default(cuid())
+  organization_id     String
+  organization        Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  influencer_id       String
+  influencer          Influencer @relation(fields: [influencer_id], references: [id], onDelete: Cascade)
+  consent_type        ConsentType
+  granted             Boolean
+  granted_at          DateTime @default(now())
+  granted_by_id       String?  // User ID if admin granted, null if influencer self-granted
+  ip_address          String?
+  revoked_at          DateTime?
+
+  @@unique([influencer_id, consent_type])
+  @@index([organization_id])
+  @@index([influencer_id])
+  @@index([consent_type])
+  @@index([granted_at])
+  @@map("consent_records")
+}
+
+enum ConsentType {
+  DATA_PROCESSING
+  MARKETING_EMAIL
+  CONTACT_PHONE
+}
